@@ -1,0 +1,121 @@
+version: '3.8'
+
+services:
+  # Aplicación Node.js (Backend + Frontend)
+  fiims-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fiims-app
+    restart: always
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://fiims_user:${DB_PASSWORD}@postgres:5432/fiims_db
+      JWT_SECRET: ${JWT_SECRET}
+      PORT: 3000
+      VITE_API_URL: https://fims.iamet.mx
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+    networks:
+      - infra_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    volumes:
+      - ./uploads:/app/uploads
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: fiims-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: fiims_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: fiims_db
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=es_ES.UTF-8"
+    ports:
+      - "5432:5432"
+    networks:
+      - infra_network
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fiims_user -d fiims_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # pgAdmin para gestión de BD
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: fiims-pgadmin
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: 'False'
+      PGADMIN_CONFIG_COOKIE_DEFAULT_SECURE: 'False'
+      PGADMIN_CONFIG_COOKIE_SAMESITE: 'Lax'
+    ports:
+      - "5050:80"
+    networks:
+      - infra_network
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+
+  # Nginx - Proxy Inverso
+  nginx:
+    image: nginx:alpine
+    container_name: fiims-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+      - ./nginx/ssl-params.conf:/etc/nginx/ssl-params.conf:ro
+    networks:
+      - infra_network
+    depends_on:
+      - fiims-app
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Certbot para SSL
+  certbot:
+    image: certbot/certbot:latest
+    container_name: fiims-certbot
+    restart: unless-stopped
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: /bin/sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done;"
+    networks:
+      - infra_network
+
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  infra_network:
+    driver: bridge
+    external: false
